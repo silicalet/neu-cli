@@ -2,6 +2,7 @@
 
 module Main (main) where
 
+import CASIntegration (casTests)
 import CLIIntegration (cliTests)
 import Control.Exception (bracket, try)
 import Control.Monad (unless)
@@ -14,6 +15,7 @@ import Data.IORef
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Text.IO qualified as T
+import NEU.Auth.CAS.Protocol
 import NEU.IPGW.Client
 import NEU.IPGW.Config
 import NEU.IPGW.Protocol
@@ -66,6 +68,7 @@ main = do
         assert "RSA interoperates with OpenSSL (UTF-8 + PKCS1 v1.5)" $ plain == TE.encodeUtf8 "20200001p密码+&"
         configTests dir
     protocolTests formHTML script
+    casTests formHTML script
     cliTests
     putStrLn "All protocol, RSA, configuration and mocked workflow tests passed."
 
@@ -150,6 +153,20 @@ protocolTests html script = do
     (unsafe, finishUnsafe) <- mock [root, hostile]
     expectFailure "reject external credential destination" $ login unsafe "u" "p"
     _ <- finishUnsafe
+    (existing, finishExisting) <- mock [root, ticket, success]
+    login existing "u" "p"
+    _ <- finishExisting
+    mapM_
+        ( \invalidTicket -> do
+            (invalid, finishInvalid) <- mock [root, invalidTicket]
+            expectFailure "invalid callback never activates gateway" $ login invalid "u" "p"
+            _ <- finishInvalid
+            pure ()
+        )
+        [ ticket {replyURL = "http://ipgw.neu.edu.cn/error?ac_id=7&ticket=ST-test"}
+        , ticket {replyURL = "http://ipgw.neu.edu.cn/srun_portal_sso?ac_id=8&ticket=ST-test"}
+        , ticket {replyURL = "http://ipgw.neu.edu.cn/srun_portal_sso?ac_id=7"}
+        ]
     let info = object ["error" .= ("ok" :: T.Text), "user_name" .= ("u&1" :: T.Text), "online_ip" .= ("10.0.0.1" :: T.Text)]
     (out, finishOut) <- mock [root, Reply "http://ipgw.neu.edu.cn/" "neu_logout({\"ecode\":0});"]
     logout out False (Online info)

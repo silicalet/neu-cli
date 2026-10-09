@@ -7,6 +7,7 @@ build-type: Simple
 license: NONE
 extra-source-files:
     README.md
+    docs/self-service.md
     third-party/ipgw-py-manager.LICENSE
     test/fixtures/*
 
@@ -18,7 +19,9 @@ common defaults
 library
     import: defaults
     hs-source-dirs: src
-    exposed-modules: NEU, NEU.IPGW.Client, NEU.IPGW.Protocol, NEU.IPGW.Config, NEU.CLI
+    exposed-modules: NEU, NEU.Auth.CAS, NEU.Auth.CAS.Protocol,
+                     NEU.HTTP.Session, NEU.HTTP.URL,
+                     NEU.IPGW.Client, NEU.IPGW.Protocol, NEU.IPGW.Config, NEU.CLI
     build-depends:
         aeson >=2.2 && <2.3, bytestring, text, containers,
         scientific,
@@ -42,7 +45,7 @@ test-suite neu-tests
     type: exitcode-stdio-1.0
     hs-source-dirs: test
     main-is: Main.hs
-    other-modules: CLIIntegration
+    other-modules: CLIIntegration, CASIntegration
     build-tool-depends: neu:neu
     ghc-options: -threaded
     build-depends: neu, aeson, bytestring, text, containers, http-types,

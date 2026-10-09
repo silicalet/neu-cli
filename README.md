@@ -79,11 +79,52 @@ neu ipgw login                       # 使用已保存的默认账号
 使用 RSA PKCS#1 v1.5 加密用户名与密码，通过 Cookie 会话取得 ticket 后开通网关。
 包含未绑定邮箱跳转、欠费和认证失败处理。遇到额外验证码或未知认证页面时明确报错。
 
+公共认证位于 `NEU.Auth.CAS`，表单解析和 RSA 位于 `NEU.Auth.CAS.Protocol`，
+进程内 HTTP/Cookie 会话位于 `NEU.HTTP.Session`。这些模块不依赖网关或账号配置。
 网关 API 位于 `src/NEU/IPGW/`，CLI 参数和输出位于 `src/NEU/CLI.hs`，
 入口为 `app/Main.hs`。网络传输可注入，便于通过模拟响应测试业务流程。
 
+### 复用统一身份认证
+
+`authenticate session service username password` 为指定 CAS `service` 完成认证跳转，
+返回最终页面 `Reply`，由业务模块检查是否登录成功。已有 CAS Cookie 时可以跳过表单；
+不同服务仍分别发起认证请求，不共用 ticket。网关随后单独校验回调路径、`ac_id` 和 ticket，
+再调用开通接口，公共认证本身不会开通网关。
+
+例如，为自助服务声明回调及允许访问的源：
+
+```haskell
+import NEU.Auth.CAS
+import NEU.HTTP.Session
+
+-- 以下 Text 字面量需要 OverloadedStrings。
+-- username/password 由调用方提供，认证模块不读取或保存账号文件。
+loginSelfService username password = do
+    service <- either (fail . show) pure $
+        mkService "http://ipgw.neu.edu.cn:8800/sso/neusoft/index"
+            ["http://ipgw.neu.edu.cn:8800", "https://ipgw.neu.edu.cn:8800"]
+    session <- newSession False 10
+    landing <- authenticate session service username password
+    pure (session, service, landing)
+```
+
+这是认证接入示例；自助服务实测会返回内部主机跳转，仍需业务适配，不能直接视为完整客户端。
+已通过临时探测验证真实账号登录、首页、日志和流量统计，详见 [自助服务探查](docs/self-service.md)。
+正式的自助服务登录校验和明细解析尚未实现。
+业务模块验证 `landing` 后，可用 `requestService session service` 继续请求。
+网关可通过 `NEU.IPGW.Client.clientWithSession` 使用同一会话。
+
+会话仅保存在内存中，按同一身份顺序使用；切换账号应创建新会话。
+Cookie 不按端口隔离，同主机不同端口若存在同名 Cookie 冲突，应使用独立会话。
+地址白名单精确匹配协议、主机和端口，检查首次请求及每次重定向；
+公钥只能从 HTTPS CAS 源获取，307/308 不重发认证表单。
+业务请求跳回 CAS 会报错，由调用方显式重新认证。
+`CASError` 区分认证被拒绝或需要额外验证、需要交互、协议错误；
+网络和地址限制错误为 `ServiceError`，网关 CLI 统一转换为现有的 `IPGWError`。
+
 离线测试覆盖 JSON/JSONP、RSA 与 OpenSSL 互操作、SSO 请求顺序和 ticket 编码、
-凭据目的地检查、Cookie/重定向、单设备与批量注销、配置权限和 CLI 错误。
+凭据目的地检查、跨服务认证、已有 CAS 会话、Cookie/重定向和端口隔离、
+单设备与批量注销、配置权限和 CLI 错误。
 尚未使用真实账号完成校园网端到端验证；学校接口改动仍可能需要适配。
 
 ## 致谢
