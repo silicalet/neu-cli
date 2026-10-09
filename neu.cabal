@@ -1,0 +1,47 @@
+cabal-version: 3.0
+name: neu
+version: 0.1.0.0
+synopsis: NEU campus services library and command-line tools
+description: Library and CLI foundation for NEU gateway and academic services.
+build-type: Simple
+license: NONE
+extra-source-files:
+    README.md
+    third-party/ipgw-py-manager.LICENSE
+    test/fixtures/*
+    test/cli.py
+
+common defaults
+    default-language: GHC2021
+    ghc-options: -Wall -Wcompat -Wincomplete-uni-patterns -Wincomplete-record-updates
+    build-depends: base >=4.20 && <4.23
+
+library
+    import: defaults
+    hs-source-dirs: src
+    exposed-modules: NEU, NEU.IPGW.Client, NEU.IPGW.Protocol, NEU.IPGW.Config, NEU.CLI
+    build-depends:
+        aeson >=2.2 && <2.3, bytestring, text, containers,
+        scientific,
+        http-client >=0.7 && <0.8, http-client-tls >=0.3 && <0.4, http-types,
+        network-uri, tagsoup, crypton >=1.0 && <1.2,
+        base64-bytestring,
+        optparse-applicative >=0.18 && <0.20, directory, filepath, unix, time
+    other-modules: Paths_neu
+    autogen-modules: Paths_neu
+
+executable neu
+    import: defaults
+    hs-source-dirs: app
+    main-is: Main.hs
+    build-depends: neu
+    ghc-options: -threaded -rtsopts
+
+
+test-suite neu-tests
+    import: defaults
+    type: exitcode-stdio-1.0
+    hs-source-dirs: test
+    main-is: Main.hs
+    build-depends: neu, aeson, bytestring, text, containers, http-types,
+                   directory, filepath, unix, process, base64-bytestring
