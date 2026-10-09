@@ -1,0 +1,5 @@
+<!doctype html><html><body><div id="main"></div><script>
+var data = {"category":["2026-01","2026-01","2026-02","2026-03","2026-03","2026-04"],"series":[1024,2048,4096,8192,8192,4096]};
+var myChart = echarts.init(document.getElementById('main'));
+var option = {xAxis:{type:'category',data:data.category},series:[{type:'line',data:data.series}]};myChart.setOption(option);
+</script></body></html>

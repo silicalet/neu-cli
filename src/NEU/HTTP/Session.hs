@@ -12,6 +12,8 @@ module NEU.HTTP.Session (
     newSession,
     sessionWithTransport,
     request,
+    RedirectRule (..),
+    withRedirectRules,
 ) where
 
 import Control.Applicative ((<|>))
@@ -28,7 +30,7 @@ import NEU.HTTP.URL (resolveURL)
 import Network.HTTP.Client qualified as HTTP
 import Network.HTTP.Client.TLS (tlsManagerSettings)
 import Network.HTTP.Types (hLocation, hReferer, hUserAgent, statusCode)
-import Network.URI (parseURI, uriAuthority, uriFragment, uriPort, uriRegName, uriScheme, uriUserInfo)
+import Network.URI (parseURI, uriAuthority, uriFragment, uriPort, uriQuery, uriRegName, uriScheme, uriUserInfo)
 import Text.Read (readMaybe)
 
 data ServiceError = ServiceError Text deriving (Show)
@@ -65,17 +67,31 @@ data RequestSpec = RequestSpec
 
 data Reply = Reply {replyURL :: Text, replyBody :: BS.ByteString} deriving (Eq, Show)
 type Transport = RequestSpec -> IO Reply
-newtype Session = Session ([Origin] -> RequestSpec -> IO Reply)
+data RedirectRule = RedirectRule
+    { redirectSource :: Text
+    , redirectTarget :: Text
+    , redirectReplacement :: Text
+    }
+    deriving (Eq, Show)
+
+newtype Session = Session ([RedirectRule] -> [Origin] -> RequestSpec -> IO Reply)
+
+{- | Explicit service-specific repair of a known reverse-proxy redirect.
+Source matches the full URL except its query (which may contain a ticket).
+Target matches exactly; replacement still passes the ordinary allowlist.
+-}
+withRedirectRules :: [RedirectRule] -> Session -> Session
+withRedirectRules rules (Session send) = Session $ \_ -> send rules
 
 -- Injected transports model a complete redirect chain; real transports check
 -- every hop. In either case the initial and final destinations are checked.
 sessionWithTransport :: Transport -> Session
-sessionWithTransport send = Session $ \_ -> send
+sessionWithTransport send = Session $ \_ _ -> send
 
 request :: Session -> [Origin] -> RequestSpec -> IO Reply
 request (Session send) allowed spec = do
     checkDestination allowed $ requestURL spec
-    response <- send allowed spec
+    response <- send [] allowed spec
     checkDestination allowed $ replyURL response
     pure response
 
@@ -95,8 +111,8 @@ newSession bypass timeoutSeconds = do
     let settings = if bypass then HTTP.managerSetProxy HTTP.proxyFromRequest tlsManagerSettings else tlsManagerSettings
     manager <- HTTP.newManager settings
     cookies <- newMVar $ HTTP.createCookieJar []
-    let send allowed spec = modifyMVar cookies (\jar -> loop allowed (0 :: Int) jar spec) `catch` networkError
-        loop allowed count jar spec = do
+    let send rules allowed spec = modifyMVar cookies (\jar -> loop rules allowed (0 :: Int) jar spec) `catch` networkError
+        loop rules allowed count jar spec = do
             when (count > 10) $ throwIO $ ServiceError "校园服务重定向次数过多"
             checkDestination allowed $ requestURL spec
             parsed <- HTTP.parseRequest $ T.unpack $ requestURL spec
@@ -127,7 +143,8 @@ newSession bypass timeoutSeconds = do
                     when (requestForm spec /= Nothing && status `elem` [307, 308]) $
                         throwIO $
                             ServiceError "拒绝重定向重发认证表单"
-                    loop allowed (count + 1) nextJar (RequestSpec next Nothing Nothing)
+                    let repaired = repairRedirect rules (requestURL spec) next
+                    loop rules allowed (count + 1) nextJar (RequestSpec repaired Nothing Nothing)
                 else do
                     unless (status >= 200 && status < 300) $
                         throwIO $
@@ -138,3 +155,10 @@ newSession bypass timeoutSeconds = do
   where
     networkError :: HTTP.HttpException -> IO a
     networkError _ = throwIO $ ServiceError "校园服务请求失败（网络、超时或 TLS 错误）；请检查校园网连接和代理设置"
+
+repairRedirect :: [RedirectRule] -> Text -> Text -> Text
+repairRedirect rules source target = case [redirectReplacement rule | rule <- rules, withoutQuery source == Just (redirectSource rule), target == redirectTarget rule] of
+    replacement : _ -> replacement
+    [] -> target
+  where
+    withoutQuery url = (\uri -> T.pack $ show uri {uriQuery = ""}) <$> parseURI (T.unpack url)

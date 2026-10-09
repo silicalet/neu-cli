@@ -26,3 +26,4 @@ cabal.project.local~
 .env.*
 !.env.example
 docs/self-service.md
+docs/self-service-implementation.md

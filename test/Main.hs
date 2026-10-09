@@ -15,15 +15,20 @@ import Data.IORef
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Text.IO qualified as T
+import LogTests (logTests)
 import NEU.Auth.CAS.Protocol
 import NEU.IPGW.Client
 import NEU.IPGW.Config
 import NEU.IPGW.Protocol
+import OverviewTests (overviewTests)
+import SelfServiceTests (selfServiceTests)
 import System.Directory
 import System.FilePath ((</>))
 import System.IO (hClose, openTempFile)
 import System.Posix.Files (fileMode, getFileStatus)
 import System.Process (callProcess)
+import TrafficTests (trafficTests)
+import UsageTests (usageTests)
 
 assert :: String -> Bool -> IO ()
 assert label condition = unless condition $ fail label
@@ -69,6 +74,11 @@ main = do
         configTests dir
     protocolTests formHTML script
     casTests formHTML script
+    logTests
+    overviewTests
+    usageTests
+    selfServiceTests
+    trafficTests
     cliTests
     putStrLn "All protocol, RSA, configuration and mocked workflow tests passed."
 

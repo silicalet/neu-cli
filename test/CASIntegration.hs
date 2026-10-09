@@ -146,6 +146,15 @@ sessionTests = do
             assert "303 clears body and referer" $ replyBody result == "get-ok"
             serviceFailure "redirect loops bounded" $ request session allowed $ get "/loop"
             serviceFailure "HTTP error surfaced" $ request session allowed $ get "/error"
+            let rule = RedirectRule (base <> "/callback") "http://selfservice/home" (base <> "/check")
+                repaired = withRedirectRules [rule] session
+            repairedReply <- request repaired allowed $ get "/callback?ticket=fixture"
+            assert "known callback repair preserves cookies" $ replyBody repairedReply == "cookie-ok"
+            serviceFailure "repair not applied to other source paths" $ request repaired allowed $ get "/not-callback"
+            serviceFailure "repair target must match exactly" $ request repaired allowed $ get "/callback?target=other"
+            serviceFailure "repair cannot widen destination allowlist" $
+                request (withRedirectRules [rule {redirectReplacement = "http://untrusted.example/home"}] session) allowed $
+                    get "/callback"
   where
     target hits _ respond = do
         modifyIORef' hits (+ 1)
@@ -167,4 +176,11 @@ sessionTests = do
                     body <- Wai.strictRequestBody req
                     ok $ if Wai.requestMethod req == methodGet && body == "" && lookup hReferer (Wai.requestHeaders req) == Nothing then "get-ok" else "wrong-method"
                 "/loop" -> redirect status302 "/loop" []
+                "/callback" ->
+                    respond $
+                        Wai.responseLBS
+                            status302
+                            [("X-Redirect", if Wai.rawQueryString req == "?target=other" then "http://selfservice/other" else "http://selfservice/home"), (hSetCookie, "session=fixture; Path=/")]
+                            ""
+                "/not-callback" -> respond $ Wai.responseLBS status302 [("X-Redirect", "http://selfservice/home")] ""
                 _ -> respond $ Wai.responseLBS status503 [] "unavailable"

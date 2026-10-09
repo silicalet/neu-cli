@@ -67,7 +67,7 @@ cliTests = withSystemTempDirectory "neu-cli-" $ \directory -> do
         checkDefault = do
             stored <- T.readFile config >>= json
             assert "default account preserved" $ field "default_username" stored == String "u"
-    forM_ [["--help"], ["ipgw", "--help"], ["ipgw", "login", "--help"], ["--version"]] $ \args -> do
+    forM_ ([["--help"], ["ipgw", "--help"], ["--version"]] ++ [["ipgw", name, "--help"] | name <- ["login", "traffic-log", "billing-log", "info", "devices", "usage", "payment-log"]]) $ \args -> do
         _ <- run args ExitSuccess ""
         pure ()
     exists <- doesDirectoryExist $ directory </> "neu"
@@ -76,6 +76,10 @@ cliTests = withSystemTempDirectory "neu-cli-" $ \directory -> do
         [ ["ipgw", "bogus"]
         , ["ipgw", "--timeout", "0", "status"]
         , ["ipgw", "add", "-u", "u", "--password-stdin", "-p", "secret"]
+        , ["ipgw", "traffic-log", "--from", "2026-02-30"]
+        , ["ipgw", "traffic-log", "--page", "0"]
+        , ["ipgw", "billing-log", "--from", "2026-10-02", "--to", "2026-10-01"]
+        , ["ipgw", "traffic-log", "-p", "secret", "--password-stdin"]
         ]
         $ \args -> do
             _ <- run args (ExitFailure 1) ""
@@ -97,6 +101,7 @@ cliTests = withSystemTempDirectory "neu-cli-" $ \directory -> do
     assert "config errors do not leak credentials" $ not $ "test-secret" `T.isInfixOf` failure
     stored <- T.readFile config
     assert "corrupt config preserved" $ stored == "broken: test-secret"
+    selfServiceArguments executable environment config failureJSON
 
     state <- newIORef $ MockState False False KM.empty
     seen <- newIORef (0 :: Int)
@@ -111,6 +116,111 @@ cliTests = withSystemTempDirectory "neu-cli-" $ \directory -> do
 
 overrides :: [(String, String)] -> [(String, String)] -> [(String, String)]
 overrides replacement original = replacement ++ filter ((`notElem` map fst replacement) . fst) original
+
+-- A loopback-only trap also counts CONNECT requests: malformed arguments must
+-- fail before reading credentials or starting the HTTPS authentication flow.
+selfServiceArguments :: FilePath -> [(String, String)] -> FilePath -> Value -> IO ()
+selfServiceArguments executable environment config configError = do
+    seen <- newIORef (0 :: Int)
+    original <- BS.readFile config
+    let trap _ respond = do
+            modifyIORef' seen (+ 1)
+            respond $ responseLBS status502 [] "unexpected network request"
+    testWithApplication (pure trap) $ \port -> do
+        let proxy = "http://127.0.0.1:" ++ show port
+            proxyEnv = [(key, proxy) | key <- ["http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY", "all_proxy", "ALL_PROXY"]] ++ [("no_proxy", ""), ("NO_PROXY", "")]
+            run = runner executable (overrides proxyEnv environment)
+        forM_ [["info"], ["devices"], ["usage"], ["usage", "--by-ip"], ["traffic-log"], ["payment-log"]] $ \args -> do
+            _ <- run (["ipgw"] ++ args ++ ["--help"]) ExitSuccess ""
+            (out, err) <- run (["ipgw", "--json"] ++ args ++ ["-u", "fixture-user", "-p", "fixture-secret", "--password-stdin"]) (ExitFailure 1) ""
+            errorJSON <- json err
+            assert "credential conflicts precede config read" $ field "ok" errorJSON == Bool False && errorJSON /= configError && T.null out
+            assert "new commands never leak explicit credentials" $ not $ "fixture-secret" `T.isInfixOf` err
+        forM_
+            [ ["usage", "--from", "2026-02-30"]
+            , ["usage", "--daily", "--from", "2026-1-01"]
+            , ["usage", "--monthly", "--from", "2026-13"]
+            , ["usage", "--monthly", "--from", "2026-10-01"]
+            , ["usage", "--daily", "--from", "2026-10"]
+            , ["usage", "--from", "2026-10-02", "--to", "2026-10-01"]
+            , ["usage", "--monthly", "--from", "2026-10", "--to", "2026-09"]
+            , ["payment-log", "--from", "2026-10-02", "--to", "2026-10-01"]
+            ]
+            $ \args -> do
+                (out, err) <- run (["ipgw", "--json"] ++ args ++ ["-u", "fixture-user", "--password-stdin"]) (ExitFailure 1) ""
+                errorJSON <- json err
+                assert "invalid ranges precede config/password/network" $ T.null out && field "ok" errorJSON == Bool False && errorJSON /= configError
+        forM_
+            ( [ command ++ bounds
+              | command <- [["traffic-log"], ["usage", "--by-ip"]]
+              , bounds <- [["--min-bytes", "2", "--max-bytes", "1"], ["--min-seconds", "1", "--max-seconds", "0"]]
+              ]
+                ++ [ command ++ [flag, blank]
+                   | command <- [["traffic-log"], ["usage", "--by-ip"]]
+                   , flag <- ["--ip", "--product"]
+                   , blank <- ["", "   "]
+                   ]
+                ++ [ ["usage"] ++ mode ++ flags
+                   | mode <- [[], ["--daily"], ["--monthly"]]
+                   , flags <- [["--page", "1"], ["--ip", "10.0.0.1"], ["--product", "校园网"], ["--min-bytes", "0"], ["--max-bytes", "0"], ["--min-seconds", "0"], ["--max-seconds", "0"]]
+                   ]
+                ++ [ ["usage", "--by-ip", "--from", day]
+                   | day <- ["2026-02-30", "2026-10", "2026-1-01"]
+                   ]
+                ++ [["usage", "--by-ip", "--from", "2026-10-02", "--to", "2026-10-01"]]
+            )
+            $ \args -> do
+                (out, err) <- run (["ipgw", "--json"] ++ args ++ ["-u", "fixture-user", "--password-stdin"]) (ExitFailure 1) ""
+                errorJSON <- json err
+                assert "traffic validation precedes config/password/network" $
+                    T.null out && field "ok" errorJSON == Bool False && errorJSON /= configError
+        forM_
+            [ command ++ [flag, value]
+            | command <- [["traffic-log"], ["usage", "--by-ip"]]
+            , flag <- ["--min-bytes", "--max-bytes", "--min-seconds", "--max-seconds"]
+            , value <- ["-1", "1.5", "1e3", "1KiB", "+1", " 1", ""]
+            ]
+            $ \args -> do
+                (out, err) <- run (["ipgw", "--json"] ++ args ++ ["-u", "fixture-user", "--password-stdin"]) (ExitFailure 1) ""
+                assert "invalid traffic counts fail in the parser before credentials" $
+                    T.null out && eitherDecodeStrict' (TE.encodeUtf8 err) /= Right configError
+        forM_
+            ( [ ["usage", first, second]
+              | first <- ["--daily", "--monthly", "--by-ip"]
+              , second <- ["--daily", "--monthly", "--by-ip"]
+              , first /= second
+              ]
+                ++ [ ["payment-log", "--from", "2026-02-30"]
+                   , ["payment-log", "--page", "0"]
+                   , ["usage", "--by-ip", "--page", "0"]
+                   , ["usage", "--by-ip", "--page", "1000001"]
+                   , ["billing-log", "--ip", "10.0.0.1"]
+                   , ["payment-log", "--product", "校园网"]
+                   ]
+            )
+            $ \args -> do
+                (out, err) <- run (["ipgw", "--json"] ++ args ++ ["-u", "fixture-user", "--password-stdin"]) (ExitFailure 1) ""
+                assert "syntax errors precede config/password/network" $
+                    T.null out && eitherDecodeStrict' (TE.encodeUtf8 err) /= Right configError
+        forM_
+            ( [ command ++ bounds
+              | command <- [["traffic-log"], ["usage", "--by-ip"]]
+              , bounds <-
+                    [ ["--min-bytes", "0", "--max-bytes", "0", "--min-seconds", "0", "--max-seconds", "0"]
+                    , ["--min-bytes", "18446744073709551616", "--max-bytes", "18446744073709551616"]
+                    , ["--ip", "10.0.0.1", "--ip", "2001:db8::1", "--product", "校园网", "--product", "移动", "--page", "1", "--from", "2026-10-01", "--to", "2026-10-01"]
+                    ]
+              ]
+                ++ [["usage"], ["usage", "--daily"], ["usage", "--monthly", "--from", "2026-10", "--to", "2026-10"], ["usage", "--by-ip"]]
+            )
+            $ \args -> do
+                (out, err) <- run (["ipgw", "--json"] ++ args ++ ["-u", "fixture-user", "--password-stdin"]) (ExitFailure 1) ""
+                errorJSON <- json err
+                assert "valid modes and inclusive zero or large bounds reach normal config validation" $
+                    T.null out && errorJSON == configError
+    count <- readIORef seen
+    stored <- BS.readFile config
+    assert "new-command help and invalid arguments perform no network or config writes" $ count == 0 && stored == original
 
 data MockState = MockState
     {online :: Bool, bad :: Bool, extraFields :: KM.KeyMap Value}

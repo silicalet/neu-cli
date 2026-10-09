@@ -7,9 +7,10 @@ build-type: Simple
 license: NONE
 extra-source-files:
     README.md
-    docs/self-service.md
     third-party/ipgw-py-manager.LICENSE
-    test/fixtures/*
+    test/fixtures/*.html
+    test/fixtures/*.b64
+    test/fixtures/*.pem
 
 common defaults
     default-language: GHC2021
@@ -21,7 +22,9 @@ library
     hs-source-dirs: src
     exposed-modules: NEU, NEU.Auth.CAS, NEU.Auth.CAS.Protocol,
                      NEU.HTTP.Session, NEU.HTTP.URL,
-                     NEU.IPGW.Client, NEU.IPGW.Protocol, NEU.IPGW.Config, NEU.CLI
+                     NEU.IPGW.Client, NEU.IPGW.Protocol, NEU.IPGW.Config,
+                     NEU.IPGW.Logs, NEU.IPGW.SelfService,
+                     NEU.IPGW.Overview, NEU.IPGW.Usage, NEU.IPGW.Traffic, NEU.CLI
     build-depends:
         aeson >=2.2 && <2.3, bytestring, text, containers,
         scientific,
@@ -29,7 +32,7 @@ library
         network-uri, tagsoup, crypton >=1.0 && <1.2,
         base64-bytestring,
         optparse-applicative >=0.18 && <0.20, directory, filepath, unix, time
-    other-modules: Paths_neu
+    other-modules: Paths_neu, NEU.IPGW.HTML
     autogen-modules: Paths_neu
 
 executable neu
@@ -45,9 +48,10 @@ test-suite neu-tests
     type: exitcode-stdio-1.0
     hs-source-dirs: test
     main-is: Main.hs
-    other-modules: CLIIntegration, CASIntegration
+    other-modules: CLIIntegration, CASIntegration, LogTests,
+                   OverviewTests, UsageTests, SelfServiceTests, TrafficTests
     build-tool-depends: neu:neu
     ghc-options: -threaded
-    build-depends: neu, aeson, bytestring, text, containers, http-types,
+    build-depends: neu, aeson, bytestring, text, containers, scientific, http-types,
                    directory, filepath, unix, process, base64-bytestring,
-                   temporary, wai >=3.2 && <3.3, warp >=3.4 && <3.5, network-uri
+                   temporary, wai >=3.2 && <3.3, warp >=3.4 && <3.5, network-uri, time

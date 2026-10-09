@@ -10,10 +10,16 @@ import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.IO qualified as T
+import Data.Time (Day, defaultTimeLocale, formatTime, parseTimeM)
 import NEU (versionString)
 import NEU.IPGW.Client
 import NEU.IPGW.Config
+import NEU.IPGW.Logs (LogKind (..), humanBytes)
+import NEU.IPGW.Overview qualified as Overview
 import NEU.IPGW.Protocol
+import NEU.IPGW.SelfService qualified as SS
+import NEU.IPGW.Traffic (TrafficFilter (..), noTrafficFilter)
+import NEU.IPGW.Usage qualified as Usage
 import Options.Applicative hiding (action, value)
 import Options.Applicative qualified as OA
 import System.Exit (exitFailure)
@@ -23,7 +29,18 @@ import Text.Read (readMaybe)
 data Command = IPGW Options
 data Options = Options (Maybe FilePath) Bool Int Bool Action
 data Credentials = Credentials (Maybe Text) (Maybe Text) Bool
-data Action = Status | Login Credentials | Logout Bool | Add Text (Maybe Text) Bool | Default Text
+data Action
+    = Status
+    | Login Credentials
+    | Logout Bool
+    | Add Text (Maybe Text) Bool
+    | Default Text
+    | Logs LogKind Credentials SS.LogQuery
+    | Info Credentials
+    | Devices Credentials
+    | Usage Credentials UsageMode (Maybe Text) (Maybe Text) (Maybe Int) TrafficFilter
+
+data UsageMode = ChartUsage Usage.UsagePeriod | IPUsage
 
 parserInfo :: ParserInfo Command
 parserInfo = info (helper <*> version <*> commandParser) (fullDesc <> progDesc "东北大学校园服务 CLI")
@@ -49,6 +66,12 @@ options =
                 <> cmd "o" logoutParser "logout 的别名"
                 <> cmd "add" (Add <$> username <*> password <*> passwordStdin) "添加或更新账号（明文保存到权限 0600 的文件）"
                 <> cmd "default" (Default <$> username) "设置默认账号"
+                <> cmd "traffic-log" (Logs TrafficLog <$> credentials <*> logQuery TrafficLog) "上网流量日志与统计（默认读取全部分页）"
+                <> cmd "billing-log" (Logs BillingLog <$> credentials <*> logQuery BillingLog) "结算扣费日志与统计（不含充值记录）"
+                <> cmd "payment-log" (Logs PaymentLog <$> credentials <*> logQuery PaymentLog) "充值记录与按缴费类型统计（默认读取全部分页）"
+                <> cmd "info" (Info <$> credentials) "账号状态与各产品概况（只读）"
+                <> cmd "devices" (Devices <$> credentials) "在线设备明细与数量（只读）"
+                <> cmd "usage" usageParser "日/月流量或按 IP 汇总流量日志（默认按日；只读）"
             )
   where
     cmd name parser description = command name (info (helper <*> parser) (progDesc description))
@@ -66,6 +89,59 @@ passwordStdin :: Parser Bool
 passwordStdin = switch (long "password-stdin" <> help "从标准输入读取一行密码")
 credentials :: Parser Credentials
 credentials = Credentials <$> optional username <*> password <*> passwordStdin
+
+logQuery :: LogKind -> Parser SS.LogQuery
+logQuery kind =
+    SS.LogQuery
+        <$> pageOption
+        <*> optional (option dayReader (long "from" <> metavar "YYYY-MM-DD" <> help "起始日期（含当天），按上线/结算/缴费日期筛选"))
+        <*> optional (option dayReader (long "to" <> metavar "YYYY-MM-DD" <> help "结束日期（含当天），北京时间"))
+        <*> (if kind == TrafficLog then trafficFilter else pure noTrafficFilter)
+
+pageOption :: Parser (Maybe Int)
+pageOption = optional $ option pageNumber (long "page" <> metavar "N" <> help "只读取指定日志页，每页 10 条；usage 仅限 --by-ip，统计仅覆盖该页")
+  where
+    pageNumber = eitherReader $ \input -> case reads input of
+        [(n, "")] | n >= (1 :: Int) && n <= 1000000 -> Right n
+        _ -> Left "页码必须为 1–1000000 的整数"
+
+parseDay :: Text -> Either Text Day
+parseDay input = case parseTimeM True defaultTimeLocale "%Y-%m-%d" (T.unpack input) of
+    Just day | T.length input == 10 && T.pack (formatTime defaultTimeLocale "%Y-%m-%d" day) == input -> Right day
+    _ -> Left "日期必须是有效的 YYYY-MM-DD"
+
+dayReader :: ReadM Day
+dayReader = eitherReader $ either (Left . T.unpack) Right . parseDay . T.pack
+
+trafficFilter :: Parser TrafficFilter
+trafficFilter =
+    TrafficFilter
+        <$> many (strOption (long "ip" <> metavar "IP" <> help "按日志原始 IP 精确匹配；可重复（同类或、不同条件且）；usage 仅限 --by-ip"))
+        <*> many (strOption (long "product" <> metavar "NAME" <> help "按产品名精确匹配；可重复；usage 仅限 --by-ip"))
+        <*> bound "min-bytes" "每条日志最少字节数（含边界）；usage 仅限 --by-ip"
+        <*> bound "max-bytes" "每条日志最多字节数（含边界）；usage 仅限 --by-ip"
+        <*> bound "min-seconds" "每条日志最短秒数（含边界）；usage 仅限 --by-ip"
+        <*> bound "max-seconds" "每条日志最长秒数（含边界）；usage 仅限 --by-ip"
+  where
+    bound name description = optional $ option count (long name <> metavar "N" <> help description)
+    count = eitherReader $ \input ->
+        if not (null input) && all (\c -> c >= '0' && c <= '9') input
+            then maybe (Left "计数必须为非负整数（不含单位）") Right (readMaybe input)
+            else Left "计数必须为非负整数（不含单位）"
+
+usageParser :: Parser Action
+usageParser =
+    Usage
+        <$> credentials
+        <*> ( flag' (ChartUsage Usage.Daily) (long "daily" <> help "日流量（默认）；与 --monthly、--by-ip 互斥")
+                <|> flag' (ChartUsage Usage.Monthly) (long "monthly" <> help "月流量；与 --daily、--by-ip 互斥")
+                <|> flag' IPUsage (long "by-ip" <> help "按原始 IP 汇总 /log/detail 日志（不是物理设备）；与 --daily、--monthly 互斥")
+                <|> pure (ChartUsage Usage.Daily)
+            )
+        <*> optional (strOption (long "from" <> metavar "PERIOD" <> help "起始日 YYYY-MM-DD 或月 YYYY-MM（含当期）；--by-ip 按上线日期，跨日会话整条计入上线日"))
+        <*> optional (strOption (long "to" <> metavar "PERIOD" <> help "结束日/月（含当期；北京时间）；--by-ip 必须为 YYYY-MM-DD"))
+        <*> pageOption
+        <*> trafficFilter
 
 runCLI :: IO ()
 runCLI = do
@@ -88,6 +164,11 @@ runIPGW (Options override bypass timeout jsonOutput action) = do
     path <- maybe configPath pure override
     let success message = emit jsonOutput (object ["ok" .= True, "message" .= message]) message
         client = newClient bypass timeout
+        selfService creds = do
+            account <- resolveAccount path creds
+            connection <- SS.newSelfService bypass timeout
+            SS.authenticateSelfService connection (accountUsername account) (accountPassword account)
+            pure connection
     case action of
         Add name supplied fromStdin -> do
             validateName name
@@ -101,6 +182,35 @@ runIPGW (Options override bypass timeout jsonOutput action) = do
             saveConfig path updated
             success "默认账号已设置"
         Status -> client >>= getStatus >>= printStatus jsonOutput
+        Logs kind creds query -> do
+            either (throwIO . IPGWError) pure $ SS.validateLogQuery kind query
+            connection <- selfService creds
+            report <- SS.fetchLogs connection kind query
+            emit jsonOutput (SS.reportJSON report) (SS.renderReport report)
+        Info creds -> do
+            overview <- selfService creds >>= SS.fetchOverview
+            emit jsonOutput (Overview.infoJSON overview) (Overview.renderInfo overview)
+        Devices creds -> do
+            overview <- selfService creds >>= SS.fetchOverview
+            emit jsonOutput (Overview.devicesJSON overview) (Overview.renderDevices overview)
+        Usage creds mode from to page filters -> case mode of
+            ChartUsage period -> do
+                when (page /= Nothing || filters /= noTrafficFilter) $
+                    throwIO $
+                        IPGWError "usage 的 --page、--ip、--product 和字节/秒数筛选只能与 --by-ip 一起使用"
+                let query = Usage.UsageQuery period from to
+                either (throwIO . IPGWError) pure $ Usage.validateUsageQuery query
+                connection <- selfService creds
+                report <- SS.fetchUsage connection query
+                emit jsonOutput (Usage.usageJSON report) (Usage.renderUsage report)
+            IPUsage -> do
+                first <- either (throwIO . IPGWError) pure $ traverse parseDay from
+                lastDay <- either (throwIO . IPGWError) pure $ traverse parseDay to
+                let query = SS.LogQuery page first lastDay filters
+                either (throwIO . IPGWError) pure $ SS.validateLogQuery TrafficLog query
+                connection <- selfService creds
+                report <- SS.fetchLogs connection TrafficLog query
+                emit jsonOutput (SS.ipUsageJSON report) (SS.renderIPUsage report)
         Logout allDevices -> do
             connection <- client
             status <- getStatus connection
@@ -113,19 +223,24 @@ runIPGW (Options override bypass timeout jsonOutput action) = do
             case status of
                 Online _ -> printStatus jsonOutput status
                 Offline _ -> do
-                    config <- loadConfig path
-                    account <- case (name, supplied, fromStdin) of
-                        (Nothing, Nothing, False) -> either (throwIO . IPGWError) pure $ selectAccount Nothing config
-                        _ -> do
-                            user <- maybe (maybe (throwIO $ IPGWError "请使用 -u 指定账号") pure $ defaultUsername config) pure name
-                            validateName user
-                            secret <- case (supplied, fromStdin, selectAccount (Just user) config) of
-                                (Nothing, False, Right saved) -> pure $ accountPassword saved
-                                _ -> readPassword supplied fromStdin
-                            pure $ Account user secret
+                    account <- resolveAccount path (Credentials name supplied fromStdin)
                     login connection (accountUsername account) (accountPassword account)
                     -- A successful login must remain successful even if status data lags behind.
                     success "登录成功"
+
+resolveAccount :: FilePath -> Credentials -> IO Account
+resolveAccount path (Credentials name supplied fromStdin) = do
+    when (fromStdin && supplied /= Nothing) $ throwIO $ IPGWError "--password 与 --password-stdin 不能同时使用"
+    config <- loadConfig path
+    case (name, supplied, fromStdin) of
+        (Nothing, Nothing, False) -> either (throwIO . IPGWError) pure $ selectAccount Nothing config
+        _ -> do
+            user <- maybe (maybe (throwIO $ IPGWError "请使用 -u 指定账号") pure $ defaultUsername config) pure name
+            validateName user
+            secret <- case (supplied, fromStdin, selectAccount (Just user) config) of
+                (Nothing, False, Right saved) -> pure $ accountPassword saved
+                _ -> readPassword supplied fromStdin
+            pure $ Account user secret
 
 validateName :: Text -> IO ()
 validateName name = when (T.null $ T.strip name) $ throwIO $ IPGWError "账号不能为空"
@@ -174,16 +289,3 @@ traffic :: Maybe Text -> Text
 traffic raw = case raw >>= readMaybe . T.unpack . T.strip of
     Just bytes | bytes >= (0 :: Integer) -> humanBytes bytes <> "（" <> T.pack (show bytes) <> " 字节）"
     _ -> "未知"
-  where
-    humanBytes bytes = scale 1 ["B", "KiB", "MiB", "GiB", "TiB", "PiB", "EiB"]
-      where
-        scale divisor (unit : next : rest)
-            | bytes >= divisor * 1024 = scale (divisor * 1024) (next : rest)
-            | otherwise = render divisor unit
-        scale divisor [unit] = render divisor unit
-        scale _ [] = T.pack (show bytes) <> " B"
-        render 1 unit = T.pack (show bytes) <> " " <> unit
-        render divisor unit =
-            let hundredths = (bytes * 100 + divisor `div` 2) `div` divisor
-                (whole, fraction) = hundredths `divMod` 100
-             in T.pack (show whole) <> "." <> T.justifyRight 2 '0' (T.pack $ show fraction) <> " " <> unit

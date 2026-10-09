@@ -1,0 +1,8 @@
+<!doctype html><html><body><div id="main"></div>
+<script>
+var unrelated = {"category":["1999-01-01"],"series":[999]};
+var data = {"category":["2026-10-01","2026-10-03","2026-10-08"],"series":[123.000,9007199254742017,9007199254742017],"note":"semicolon; brace } escaped quote \" backslash \\"};
+var myChart = echarts.init(document.getElementById('main'));
+var option = {xAxis:{type:'category',data:data.category},series:[{type:'line',data:data.series}]};
+myChart.setOption(option);
+</script></body></html>
