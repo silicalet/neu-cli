@@ -13,7 +13,6 @@
     pkgs.git
     pkgs.haskellPackages.fourmolu
     pkgs.openssl # RSA interoperability tests
-    pkgs.python3 # Offline CLI / HTTP integration tests (standard library only)
   ];
 
   scripts.neu-fmt.exec = ''
@@ -26,7 +25,6 @@
     cabal run neu -- --help
     cabal run neu -- --version
     cabal test all --test-show-details=direct
-    python3 test/cli.py "$(cabal list-bin exe:neu)"
     find app src test -name '*.hs' -type f -exec fourmolu --mode check {} +
   '';
 

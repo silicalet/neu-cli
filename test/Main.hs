@@ -2,6 +2,7 @@
 
 module Main (main) where
 
+import CLIIntegration (cliTests)
 import Control.Exception (bracket, try)
 import Control.Monad (unless)
 import Data.Aeson (object, (.=))
@@ -65,6 +66,7 @@ main = do
         assert "RSA interoperates with OpenSSL (UTF-8 + PKCS1 v1.5)" $ plain == TE.encodeUtf8 "20200001p密码+&"
         configTests dir
     protocolTests formHTML script
+    cliTests
     putStrLn "All protocol, RSA, configuration and mocked workflow tests passed."
 
 withTemp :: (FilePath -> IO a) -> IO a

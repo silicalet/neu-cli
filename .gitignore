@@ -1,0 +1,27 @@
+# Devenv
+.devenv*
+devenv.local.nix
+devenv.local.yaml
+
+# direnv
+.direnv
+
+# pre-commit
+.pre-commit-config.yaml
+
+# Haskell
+dist-newstyle/
+dist/
+.hie/
+*.hi
+*.o
+*.dyn_hi
+*.dyn_o
+cabal.project.local
+cabal.project.local~
+.ghc.environment.*
+
+# Local credentials / environment
+.env
+.env.*
+!.env.example

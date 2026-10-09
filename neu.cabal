@@ -9,7 +9,6 @@ extra-source-files:
     README.md
     third-party/ipgw-py-manager.LICENSE
     test/fixtures/*
-    test/cli.py
 
 common defaults
     default-language: GHC2021
@@ -43,5 +42,9 @@ test-suite neu-tests
     type: exitcode-stdio-1.0
     hs-source-dirs: test
     main-is: Main.hs
+    other-modules: CLIIntegration
+    build-tool-depends: neu:neu
+    ghc-options: -threaded
     build-depends: neu, aeson, bytestring, text, containers, http-types,
-                   directory, filepath, unix, process, base64-bytestring
+                   directory, filepath, unix, process, base64-bytestring,
+                   temporary, wai >=3.2 && <3.3, warp >=3.4 && <3.5, network-uri

@@ -24,7 +24,8 @@ cabal install exe:neu       # 安装 CLI 到 Cabal 的用户 bin 目录
 
 首次构建需要下载 Hackage 依赖，必要时先运行 `cabal update`。
 测试使用模拟网关响应、本地 HTTP 代理和专用测试 RSA 密钥，不使用真实校园账号。
-RSA 互操作测试需要 OpenSSL；CLI 集成测试需要 Python 3（均已包含在 devenv 中）。
+测试套件全部使用 Haskell 编写，CLI 集成测试通过 WAI/Warp 启动本地模拟代理，
+由 Cabal 构建并调用 `neu` 可执行文件。RSA 互操作测试需要 OpenSSL（已包含在 devenv 中）。
 `test/fixtures/test-only-private.pem` 仅用于离线测试，不用于真实认证。
 
 ## 网关命令
