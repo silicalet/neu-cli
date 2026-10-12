@@ -21,7 +21,8 @@ library
     import: defaults
     hs-source-dirs: src
     exposed-modules: NEU, NEU.Auth.CAS, NEU.Auth.CAS.Protocol,
-                     NEU.HTTP.Session, NEU.HTTP.URL,
+                     NEU.HTTP.Session, NEU.HTTP.URL, NEU.WebVPN,
+                     NEU.Library, NEU.Library.Access,
                      NEU.IPGW.Client, NEU.IPGW.Protocol, NEU.IPGW.Config,
                      NEU.IPGW.Logs, NEU.IPGW.SelfService,
                      NEU.IPGW.Overview, NEU.IPGW.Usage, NEU.IPGW.Traffic, NEU.CLI
@@ -29,9 +30,9 @@ library
         aeson >=2.2 && <2.3, bytestring, text, containers,
         scientific,
         http-client >=0.7 && <0.8, http-client-tls >=0.3 && <0.4, http-types,
-        network-uri, tagsoup, crypton >=1.0 && <1.2,
+        network-uri, tagsoup, crypton >=1.0 && <1.2, memory,
         base64-bytestring,
-        optparse-applicative >=0.18 && <0.20, directory, filepath, unix, time
+        optparse-applicative >=0.18 && <0.20, directory, filepath, unix, time, process
     other-modules: Paths_neu, NEU.IPGW.HTML
     autogen-modules: Paths_neu
 
@@ -49,7 +50,7 @@ test-suite neu-tests
     hs-source-dirs: test
     main-is: Main.hs
     other-modules: CLIIntegration, CASIntegration, LogTests,
-                   OverviewTests, UsageTests, SelfServiceTests, TrafficTests
+                   OverviewTests, UsageTests, SelfServiceTests, TrafficTests, LibraryTests
     build-tool-depends: neu:neu
     ghc-options: -threaded
     build-depends: neu, aeson, bytestring, text, containers, scientific, http-types,

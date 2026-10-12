@@ -67,7 +67,7 @@ cliTests = withSystemTempDirectory "neu-cli-" $ \directory -> do
         checkDefault = do
             stored <- T.readFile config >>= json
             assert "default account preserved" $ field "default_username" stored == String "u"
-    forM_ ([["--help"], ["ipgw", "--help"], ["--version"]] ++ [["ipgw", name, "--help"] | name <- ["login", "traffic-log", "billing-log", "info", "devices", "usage", "payment-log"]]) $ \args -> do
+    forM_ ([["--help"], ["ipgw", "--help"], ["webvpn", "--help"], ["lib", "--help"], ["--version"]] ++ [["ipgw", name, "--help"] | name <- ["login", "traffic-log", "billing-log", "info", "devices", "usage", "payment-log"]] ++ [["lib", name, "--help"] | name <- ["search", "news"]]) $ \args -> do
         _ <- run args ExitSuccess ""
         pure ()
     exists <- doesDirectoryExist $ directory </> "neu"
@@ -86,6 +86,16 @@ cliTests = withSystemTempDirectory "neu-cli-" $ \directory -> do
             pure ()
     configExists <- doesFileExist config
     assert "invalid arguments must not create config" $ not configExists
+    (webvpnOut, webvpnErr) <- run ["webvpn", "https://pass.neu.edu.cn/tpass/login"] ExitSuccess ""
+    assert "webvpn converts without opening a browser" $
+        T.strip webvpnOut == "https://webvpn.neu.edu.cn/https/62304135386136393339346365373340a0e0b72cc4cb43c8bc1d6f66c806db/tpass/login" && T.null webvpnErr
+    (webvpnJSON, _) <- run ["webvpn", "--json", "ipgw.neu.edu.cn"] ExitSuccess ""
+    converted <- json webvpnJSON
+    assert "webvpn JSON keeps source and proxy URL" $
+        field "source" converted == String "http://ipgw.neu.edu.cn" && field "url" converted == String "https://webvpn.neu.edu.cn/http/62304135386136393339346365373340b9f1a328c4cb43c8bc1d6f66c806db"
+    (_, webvpnFailure) <- run ["webvpn", "--json", "ftp://pass.neu.edu.cn"] (ExitFailure 1) ""
+    webvpnError <- json webvpnFailure
+    assert "webvpn rejects unsupported URLs before opening anything" $ field "ok" webvpnError == Bool False && field "error" webvpnError == String "只支持 http 和 https"
     (out, err) <- run ["ipgw", "add", "-u", "u", "--password-stdin"] ExitSuccess "test-secret\n"
     assert "password must not be printed" $ not $ "test-secret" `T.isInfixOf` (out <> err)
     mode <- fileMode <$> getFileStatus config

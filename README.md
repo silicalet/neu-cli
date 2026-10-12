@@ -28,6 +28,37 @@ cabal install exe:neu       # 安装 CLI 到 Cabal 的用户 bin 目录
 由 Cabal 构建并调用 `neu` 可执行文件。RSA 互操作测试需要 OpenSSL（已包含在 devenv 中）。
 `test/fixtures/test-only-private.pem` 仅用于离线测试，不用于真实认证。
 
+## WebVPN
+
+`webvpn` 把校内 http(s) 地址转换成 `webvpn.neu.edu.cn` 代理地址。只加密主机名，
+路径和查询串原样保留；省略协议时按 `http`。非默认端口写在协议段，例如 `https-8800`。
+链接仍需登录东北大学统一身份认证。
+
+```sh
+neu webvpn https://pass.neu.edu.cn/tpass/login
+neu webvpn --json ipgw.neu.edu.cn
+neu webvpn --open https://ipgw.neu.edu.cn:8800/home    # 默认 xdg-open
+neu webvpn --browser firefox https://pass.neu.edu.cn/tpass/login
+```
+
+`--browser` 会打开转换后的地址。指定的命令直接执行，不经过 shell。
+
+## 图书馆
+
+`lib` 只读查询馆藏和公告。先查询当前设备的网关状态：在线时直连
+`210.30.202.58:8991` 和 `www.lib.neu.edu.cn`；不在线或网关不可达时，用已保存账号
+登录 WebVPN 再访问。不读取借阅记录，不执行预约或荐购。
+
+```sh
+neu lib search haskell --field WTI --base NEU01 --limit 10
+neu lib --json news --kind resource
+```
+
+`--field` 支持 Aleph 的 `WRD`、`WTI`、`TIT`、`WAU`、`WSU`、`WPU`、`ISS`、`ISB`、
+`CAL`、`CLC`、`SYS`、`BAR`。`--base` 为 `NEU01`（中文）或 `NEU09`（西文）。
+`--kind` 为 `notice`（公告）或 `resource`（资源动态）。
+
+
 ## 网关命令
 
 以下示例使用已安装的 `neu`；开发时可把 `neu` 替换成 `cabal run neu --`。
@@ -275,7 +306,9 @@ Cookie 不按端口隔离，同主机不同端口若存在同名 Cookie 冲突�
 凭据目的地检查、跨服务认证、已有 CAS 会话、Cookie/重定向和端口隔离、
 单设备与批量注销、配置权限和 CLI 错误，以及日志原始列、分页、日期筛选、精确统计、
 空结果、页面变化和重复记录。新增测试覆盖嵌套首页/多产品/IPv6/未知值、图表 JSON 提取、
-严格日/月范围、重复期间、日 kB/月字节归一化、超大数精度、充值分组及完整模拟认证读取流程。
+严格日/月范围、重复期间、日 kB/月字节归一化、超大数精度、充值分组及完整模拟认证读取流程，
+以及 WebVPN 主机名 AES-128-CFB 转换、端口、非法地址、馆藏字段和公告日期。
+图书馆命令先查网关：在线直连，否则登录 WebVPN。帮助参数不联网。
 实际 CLI 参数测试使用本地请求陷阱，检查帮助、模式/日期/凭据冲突不联网、不写配置。
 全部夹具人工构造；普通测试不请求校园主机。模拟业务 Transport 与本地 HTTP 代理测试
 不等于真实 HTTPS CAS 端到端测试。

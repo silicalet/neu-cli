@@ -15,11 +15,13 @@ import Data.IORef
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Text.IO qualified as T
+import LibraryTests (libraryTests)
 import LogTests (logTests)
 import NEU.Auth.CAS.Protocol
 import NEU.IPGW.Client
 import NEU.IPGW.Config
 import NEU.IPGW.Protocol
+import NEU.WebVPN (encodeWebVPN, webvpnURL)
 import OverviewTests (overviewTests)
 import SelfServiceTests (selfServiceTests)
 import System.Directory
@@ -71,6 +73,7 @@ main = do
         callProcess "openssl" ["pkeyutl", "-decrypt", "-inkey", "test/fixtures/test-only-private.pem", "-in", dir </> "cipher", "-out", dir </> "plain", "-pkeyopt", "rsa_padding_mode:pkcs1"]
         plain <- BS.readFile $ dir </> "plain"
         assert "RSA interoperates with OpenSSL (UTF-8 + PKCS1 v1.5)" $ plain == TE.encodeUtf8 "20200001p密码+&"
+        webvpnTests
         configTests dir
     protocolTests formHTML script
     casTests formHTML script
@@ -79,6 +82,7 @@ main = do
     usageTests
     selfServiceTests
     trafficTests
+    libraryTests
     cliTests
     putStrLn "All protocol, RSA, configuration and mocked workflow tests passed."
 
@@ -92,6 +96,19 @@ withTemp = bracket create removePathForcibly
         removeFile path
         createDirectory path
         pure path
+
+webvpnTests :: IO ()
+webvpnTests = do
+    let converted input = webvpnURL <$> encodeWebVPN input
+        expect input output = assert (T.unpack input) $ converted input == Right output
+    expect "https://pass.neu.edu.cn/tpass/login" "https://webvpn.neu.edu.cn/https/62304135386136393339346365373340a0e0b72cc4cb43c8bc1d6f66c806db/tpass/login"
+    expect "http://219.216.96.4/eams/homeExt.action" "https://webvpn.neu.edu.cn/http/62304135386136393339346365373340e2b0fd71d8941093ab4e2527/eams/homeExt.action"
+    expect "https://ipgw.neu.edu.cn:8800/home" "https://webvpn.neu.edu.cn/https-8800/62304135386136393339346365373340b9f1a328c4cb43c8bc1d6f66c806db/home"
+    expect "ipgw.neu.edu.cn" "https://webvpn.neu.edu.cn/http/62304135386136393339346365373340b9f1a328c4cb43c8bc1d6f66c806db"
+    expect "https://pass.neu.edu.cn:443/tpass/login?service=a%20b" "https://webvpn.neu.edu.cn/https/62304135386136393339346365373340a0e0b72cc4cb43c8bc1d6f66c806db/tpass/login?service=a%20b"
+    assert "reject IPv6 literal" $ isLeft $ encodeWebVPN "http://[2001:db8::1]/path"
+    assert "reject unsupported scheme" $ isLeft $ encodeWebVPN "ftp://pass.neu.edu.cn/"
+    assert "reject empty URL" $ isLeft $ encodeWebVPN "  "
 
 configTests :: FilePath -> IO ()
 configTests dir = do

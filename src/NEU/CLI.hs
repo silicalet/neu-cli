@@ -20,13 +20,17 @@ import NEU.IPGW.Protocol
 import NEU.IPGW.SelfService qualified as SS
 import NEU.IPGW.Traffic (TrafficFilter (..), noTrafficFilter)
 import NEU.IPGW.Usage qualified as Usage
+import NEU.Library qualified as Library
+import NEU.Library.Access qualified as LibraryAccess
+import NEU.WebVPN (WebVPNURL (..), encodeWebVPN)
 import Options.Applicative hiding (action, value)
 import Options.Applicative qualified as OA
 import System.Exit (exitFailure)
 import System.IO (hFlush, hGetEcho, hIsTerminalDevice, hSetEcho, stderr, stdin)
+import System.Process (createProcess, proc)
 import Text.Read (readMaybe)
 
-data Command = IPGW Options
+data Command = IPGW Options | WebVPN Bool (Maybe FilePath) Bool Text | LibraryCommand LibraryOptions
 data Options = Options (Maybe FilePath) Bool Int Bool Action
 data Credentials = Credentials (Maybe Text) (Maybe Text) Bool
 data Action
@@ -48,7 +52,56 @@ parserInfo = info (helper <*> version <*> commandParser) (fullDesc <> progDesc "
     version = infoOption versionString (long "version" <> short 'V' <> help "显示版本")
 
 commandParser :: Parser Command
-commandParser = hsubparser $ command "ipgw" $ info (helper <*> (IPGW <$> options)) (progDesc "校园网网关管理")
+commandParser =
+    hsubparser $
+        command "ipgw" (info (helper <*> (IPGW <$> options)) (progDesc "校园网网关管理"))
+            <> command "webvpn" (info (helper <*> webvpnParser) (progDesc "把校内地址转换为 WebVPN 地址"))
+            <> command "lib" (info (helper <*> (LibraryCommand <$> libraryOptions)) (progDesc "图书馆只读查询"))
+
+webvpnParser :: Parser Command
+webvpnParser =
+    WebVPN
+        <$> switch (long "json" <> help "以 JSON 输出结果和错误")
+        <*> optional (strOption (long "browser" <> metavar "COMMAND" <> help "用该命令打开转换后的地址"))
+        <*> switch (long "open" <> short 'o' <> help "用默认浏览器打开；指定 --browser 时也会打开")
+        <*> (T.pack <$> strArgument (metavar "URL" <> help "校内 http(s) 地址；省略协议时按 http"))
+
+data LibraryOptions = LibraryOptions (Maybe FilePath) Bool Int Bool Credentials LibraryAction
+data LibraryAction = Search Text Text Text Int | Notices Text Int
+
+libraryOptions :: Parser LibraryOptions
+libraryOptions =
+    LibraryOptions
+        <$> optional (strOption (long "config" <> metavar "FILE" <> help "配置文件（默认 $XDG_CONFIG_HOME/neu/ipgw.json）"))
+        <*> switch (long "bypass-system-proxy" <> help "忽略 HTTP(S) 代理环境变量")
+        <*> option timeoutReader (long "timeout" <> OA.value 10 <> showDefault <> metavar "SECONDS" <> help "单次请求超时（1–300 秒）")
+        <*> switch (long "json" <> help "以 JSON 输出结果和错误")
+        <*> credentials
+        <*> hsubparser
+            ( command "search" (info (helper <*> searchParser) (progDesc "检索馆藏"))
+                <> command "news" (info (helper <*> newsParser) (progDesc "图书馆公告或资源动态"))
+            )
+  where
+    searchParser =
+        Search
+            <$> (T.pack <$> strArgument (metavar "QUERY" <> help "检索词"))
+            <*> (T.pack <$> option fieldReader (long "field" <> OA.value "WRD" <> showDefault <> metavar "CODE" <> help "WRD/WTI/TIT/WAU/WSU/WPU/ISS/ISB/CAL/CLC/SYS/BAR"))
+            <*> (T.pack <$> option baseReader (long "base" <> OA.value "NEU01" <> showDefault <> metavar "BASE" <> help "NEU01 中文，NEU09 西文"))
+            <*> option limitReader (long "limit" <> OA.value 10 <> showDefault <> metavar "N" <> help "最多返回条数（1–50）")
+    newsParser =
+        Notices
+            <$> (T.pack <$> option newsReader (long "kind" <> OA.value "notice" <> showDefault <> metavar "KIND" <> help "notice 公告，resource 资源动态"))
+            <*> option limitReader (long "limit" <> OA.value 10 <> showDefault <> metavar "N" <> help "最多返回条数（1–50）")
+    fieldReader = enumReader ["WRD", "WTI", "TIT", "WAU", "WSU", "WPU", "ISS", "ISB", "CAL", "CLC", "SYS", "BAR"] "未知检索字段"
+    baseReader = enumReader ["NEU01", "NEU09"] "文献库只支持 NEU01 或 NEU09"
+    newsReader = enumReader ["notice", "resource"] "类型只支持 notice 或 resource"
+    limitReader = eitherReader $ \input -> case reads input of
+        [(n, "")] | n >= (1 :: Int) && n <= 50 -> Right n
+        _ -> Left "数量必须为 1–50 的整数"
+    timeoutReader = eitherReader $ \input -> case reads input of
+        [(n, "")] | n >= (1 :: Int) && n <= 300 -> Right n
+        _ -> Left "超时必须为 1–300 的整数"
+    enumReader allowed message = eitherReader $ \input -> if input `elem` allowed then Right input else Left message
 
 options :: Parser Options
 options =
@@ -145,12 +198,48 @@ usageParser =
 
 runCLI :: IO ()
 runCLI = do
-    IPGW opts@(Options _ _ _ jsonOutput _) <- execParser parserInfo
-    (runIPGW opts `catch` handleGateway jsonOutput) `catch` handleIO jsonOutput
+    commandValue <- execParser parserInfo
+    case commandValue of
+        IPGW opts@(Options _ _ _ jsonOutput _) ->
+            (runIPGW opts `catch` handleGateway jsonOutput) `catch` handleIO jsonOutput
+        WebVPN jsonOutput browser open target ->
+            runWebVPN jsonOutput browser open target `catch` handleIO jsonOutput
+        LibraryCommand opts@(LibraryOptions _ _ _ jsonOutput _ _) ->
+            (runLibrary opts `catch` handleLibrary jsonOutput) `catch` handleIO jsonOutput
   where
     handleGateway jsonOutput (IPGWError message) = failWith jsonOutput message
+    handleLibrary jsonOutput (LibraryAccess.LibraryError message) = failWith jsonOutput message
     handleIO :: Bool -> IOException -> IO ()
-    handleIO jsonOutput _ = failWith jsonOutput "无法读写配置或终端输入，请检查路径和权限"
+    handleIO jsonOutput _ = failWith jsonOutput "无法读写配置、启动浏览器或读取终端输入，请检查路径和权限"
+
+runLibrary :: LibraryOptions -> IO ()
+runLibrary (LibraryOptions override bypass timeout jsonOutput creds action) = do
+    path <- maybe configPath pure override
+    account <- resolveAccount path creds
+    (route, connection) <- LibraryAccess.openLibrary bypass timeout (accountUsername account) (accountPassword account)
+    let routeText = LibraryAccess.routeName route
+    case action of
+        Search text field localBase limit -> do
+            when (T.null $ T.strip text) $ throwIO $ LibraryAccess.LibraryError "检索词不能为空"
+            hits <- LibraryAccess.fetchCatalog connection (Library.CatalogQuery text field localBase limit)
+            emit jsonOutput (Library.hitsJSON routeText hits) (Library.renderHits hits)
+        Notices kind limit -> do
+            items <- LibraryAccess.fetchNews connection kind
+            let shown = take limit items
+            emit jsonOutput (Library.newsJSON routeText kind shown) (Library.renderNews shown)
+
+runWebVPN :: Bool -> Maybe FilePath -> Bool -> Text -> IO ()
+runWebVPN jsonOutput browser open target = case encodeWebVPN target of
+    Left message -> failWith jsonOutput message
+    Right converted -> do
+        emit jsonOutput (object ["url" .= webvpnURL converted, "source" .= sourceURL converted]) (webvpnURL converted)
+        when (open || browser /= Nothing) $
+            launchBrowser (fromMaybe "xdg-open" browser) (T.unpack $ webvpnURL converted)
+
+launchBrowser :: FilePath -> String -> IO ()
+launchBrowser browserCommand url = do
+    _ <- createProcess (proc browserCommand [url])
+    pure ()
 
 failWith :: Bool -> Text -> IO a
 failWith jsonOutput message = do
