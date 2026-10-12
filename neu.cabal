@@ -4,7 +4,8 @@ version: 0.1.0.0
 synopsis: NEU campus services library and command-line tools
 description: Library and CLI foundation for NEU gateway and academic services.
 build-type: Simple
-license: NONE
+license: MPL-2.0
+license-file: LICENSE
 extra-source-files:
     README.md
     third-party/ipgw-py-manager.LICENSE
