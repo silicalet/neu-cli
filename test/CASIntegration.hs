@@ -57,7 +57,7 @@ casTests html script = do
         selfOrigins = ["http://ipgw.neu.edu.cn:8800", "https://ipgw.neu.edu.cn:8800"]
         gatewayURL = "http://ipgw.neu.edu.cn/srun_portal_sso?ac_id=7"
         page = Reply "https://pass.neu.edu.cn/tpass/login" $ TE.encodeUtf8 html
-        js = Reply "https://pass.neu.edu.cn/tpass/static/login_neu.js" $ TE.encodeUtf8 script
+        js = Reply "https://pass.neu.edu.cn/tpass/comm/neu/js/login_neu_new.js?v=3" $ TE.encodeUtf8 script
         home = Reply "https://ipgw.neu.edu.cn:8800/home" "<title>Account</title>"
         ticket = Reply (gatewayURL <> "&ticket=ST-test") ""
         email = page {replyBody = TE.encodeUtf8 "<title>智慧东大</title>"}
@@ -86,6 +86,20 @@ casTests html script = do
         Just fields -> lookup "ul" fields == Just "3" && lookup "pl" fields == Just "3" && lookup "password" fields == Nothing
         Nothing -> False
 
+    let fallbackPage = page {replyBody = TE.encodeUtf8 $ T.replace "</head>" "<script src='/tpass/comm/neu/js/login_keys.js'></script></head>" html}
+        noKey = Reply "https://pass.neu.edu.cn/tpass/comm/neu/js/login_neu_new.js?v=3" "var other = 1;"
+        keyJS = Reply "https://pass.neu.edu.cn/tpass/comm/neu/js/login_keys.js" $ TE.encodeUtf8 script
+    (fallback, finishFallback) <- mock [fallbackPage, noKey, keyJS, home]
+    fallbackLanding <- authenticate fallback service "u" "p"
+    assert "renamed key script is discovered by content" $ fallbackLanding == home
+    _ <- finishFallback
+    let inline = "<html><head><title>智慧东大--统一身份认证</title><script>" <> script <> "</script></head><body><form id='loginForm' action='/tpass/login?service=fixture'><input name='lt' value='L'/><input name='execution' value='E'/><input id='rsa' name='rsa'/><input id='ul' name='ul'/><input id='pl' name='pl'/></form></body></html>"
+        inlinePage = page {replyBody = TE.encodeUtf8 inline}
+    (inlineSession, finishInline) <- mock [inlinePage, home]
+    inlineLanding <- authenticate inlineSession service "u" "p"
+    assert "inline public key is discovered" $ inlineLanding == home
+    _ <- finishInline
+
     (bad, finishBad) <- mock [page, js, failed]
     casFailure "credential rejection / extra verification" CredentialsRejectedOrInteractionRequired $ authenticate bad service "u" "p"
     _ <- finishBad
@@ -102,12 +116,21 @@ casTests html script = do
     (unsafe, finishUnsafe) <- mock [hostile]
     casFailure "credentials never posted to service or external host" (CASProtocolError "SSO 表单或脚本指向了不可信地址") $ authenticate unsafe service "u" "p"
     _ <- finishUnsafe
-    let hostileScript = page {replyBody = TE.encodeUtf8 $ T.replace "/tpass/static/login_neu.js" "http://pass.neu.edu.cn/login_neu.js" html}
+    let hostileScript = page {replyBody = TE.encodeUtf8 $ T.replace "/tpass/comm/neu/js/login_neu_new.js" "http://pass.neu.edu.cn/login_neu_new.js" html}
     (unsafeJS, finishJS) <- mock [hostileScript]
     casFailure "reject insecure public key script" (CASProtocolError "SSO 表单或脚本指向了不可信地址") $ authenticate unsafeJS service "u" "p"
     _ <- finishJS
-    (redirectedJS, finishRedirectedJS) <- mock [page, home]
-    serviceFailure "public key redirects must stay on CAS" $ authenticate redirectedJS service "u" "p"
+    let singleScript =
+            page
+                { replyBody =
+                    TE.encodeUtf8 $
+                        "<html><head><title>智慧东大--统一身份认证</title><script src='/tpass/comm/neu/js/login_neu_new.js'></script></head><body><form id='loginForm' action='/tpass/login?service=fixture'><input name='lt' value='L'/><input name='execution' value='E'/><input id='rsa' name='rsa'/><input id='ul' name='ul'/><input id='pl' name='pl'/></form></body></html>"
+                }
+    (redirectedJS, finishRedirectedJS) <- mock [singleScript, home]
+    redirected <- try (authenticate redirectedJS service "u" "p")
+    assert "public key redirects must stay on CAS" $ case redirected of
+        Left (CASProtocolError message) -> "未找到可用的 RSA 公钥" `T.isInfixOf` message && "允许范围之外" `T.isInfixOf` message
+        _ -> False
     _ <- finishRedirectedJS
     (wrongPort, finishPort) <- mock [ticket]
     serviceFailure "service cannot land on gateway port" $ authenticate wrongPort service "u" "p"

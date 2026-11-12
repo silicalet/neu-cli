@@ -9,37 +9,64 @@ module NEU.Auth.CAS.Protocol (
     decodePublicKey,
 ) where
 
+import Control.Applicative ((<|>))
 import Crypto.PubKey.RSA.PKCS15 qualified as RSA
 import Crypto.PubKey.RSA.Types (PublicKey (..))
 import Data.ByteString qualified as BS
 import Data.ByteString.Base64 qualified as B64
-import Data.List (find)
+import Data.List (find, nub)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Text.HTML.TagSoup (Tag (..), fromAttrib, parseTags)
 
 data LoginForm = LoginForm
-    {formAction :: Text, formLT :: Text, formExecution :: Text, formScript :: Text}
+    { formAction :: Text
+    , formLT :: Text
+    , formExecution :: Text
+    , formRSAField :: Text
+    , formULField :: Text
+    , formPLField :: Text
+    , formScripts :: [Text]
+    }
     deriving (Eq, Show)
 
 parseLoginForm :: Text -> Either Text LoginForm
 parseLoginForm html = do
     let tags = parseTags html
-    form <-
-        maybe (Left "SSO 页面缺少 loginForm") Right $
-            find (\t -> isTag "form" t && fromAttrib "id" t == "loginForm") tags
-    let inside = takeWhile (/= TagClose "form") (drop 1 $ dropWhile (/= form) tags)
-        input key value =
-            maybe (Left $ "SSO 表单缺少 " <> value) (required "value") $
-                find (\t -> isTag "input" t && fromAttrib key t == value) inside
-    action <- required "action" form
-    lt <- input "id" "lt"
-    execution <- input "name" "execution"
-    script <-
-        maybe (Left "SSO 页面缺少 login_neu.js") (required "src") $
-            find (\t -> isTag "script" t && "login_neu.js" `T.isInfixOf` fromAttrib "src" t) tags
-    pure $ LoginForm action lt execution script
+        forms = [t | t@(TagOpen "form" _) <- tags]
+        insideOf tag = takeWhile (/= TagClose "form") (drop 1 $ dropWhile (/= tag) tags)
+        hasInput name tag = any (\t -> isTag "input" t && (fromAttrib "id" t == name || fromAttrib "name" t == name)) (insideOf tag)
+        form =
+            find ((== "loginForm") . fromAttrib "id") forms
+                <|> find (hasInput "rsa") forms
+                <|> case forms of [only] -> Just only; _ -> Nothing
+    login <- maybe (Left "SSO 页面缺少登录表单") Right form
+    let inside = insideOf login
+        findInput key value =
+            find (\t -> isTag "input" t && fromAttrib key t == value) inside
+        input label = maybe (Left $ "SSO 表单缺少 " <> label) Right
+        fieldName label tag =
+            let name = fromAttrib "name" tag
+             in if T.null name then Left ("SSO 表单 " <> label <> " 缺少 name") else Right name
+        fieldValue label tag =
+            let value = fromAttrib "value" tag
+             in if T.null value then Left ("SSO 表单 " <> label <> " 值为空") else Right value
+    action <- required "action" login
+    ltTag <- input "lt" $ findInput "name" "lt"
+    lt <- fieldValue "lt" ltTag
+    executionTag <- input "execution" $ findInput "name" "execution"
+    execution <- fieldValue "execution" executionTag
+    rsaTag <- input "rsa" $ findInput "id" "rsa" <|> findInput "name" "rsa"
+    rsaField <- fieldName "rsa" rsaTag
+    ulTag <- input "ul" $ findInput "id" "ul" <|> findInput "name" "ul"
+    ulField <- fieldName "ul" ulTag
+    plTag <- input "pl" $ findInput "id" "pl" <|> findInput "name" "pl"
+    plField <- fieldName "pl" plTag
+    -- The SSO page renamed login_neu.js and may move the public key between
+    -- scripts; keep every external candidate for key discovery.
+    let scripts = nub [src | t <- tags, isTag "script" t, let src = fromAttrib "src" t, not (T.null src)]
+    pure $ LoginForm action lt execution rsaField ulField plField scripts
   where
     isTag name (TagOpen n _) = name == n
     isTag _ _ = False

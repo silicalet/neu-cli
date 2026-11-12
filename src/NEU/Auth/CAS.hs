@@ -11,8 +11,9 @@ module NEU.Auth.CAS (
     requestService,
 ) where
 
-import Control.Exception (Exception, throwIO)
+import Control.Exception (Exception, throwIO, try)
 import Control.Monad (unless)
+import Data.List (nub, sortOn)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
@@ -71,20 +72,22 @@ authenticate session service@(Service _ allowed cas) username password = do
     if isLanding page
         then pure page
         else do
-            form <- checked $ parseLoginForm $ bodyText page
+            let body = bodyText page
+            form <- case parseLoginForm body of
+                Left message -> throwIO $ CASProtocolError (message <> pageContext body)
+                Right parsed -> pure parsed
             action <- checked $ resolveURL (replyURL page) (formAction form)
-            script <- checked $ resolveURL (replyURL page) (formScript form)
-            unless (sameOrigin cas action && sameOrigin cas script) $
+            unless (sameOrigin cas action) $
                 throwIO $
                     CASProtocolError "SSO 表单或脚本指向了不可信地址"
-            key <- request session [cas] (RequestSpec script Nothing Nothing) >>= checked . extractPublicKey . bodyText
+            key <- discoverPublicKey session cas (replyURL page) body (formScripts form) >>= checked
             encrypted <- encryptCredentials username password key >>= checked
             let fields =
                     map
-                        (\(k, v) -> (k, TE.encodeUtf8 v))
-                        [ ("rsa", encrypted)
-                        , ("ul", jsLength username)
-                        , ("pl", jsLength password)
+                        (\(k, v) -> (TE.encodeUtf8 k, TE.encodeUtf8 v))
+                        [ (formRSAField form, encrypted)
+                        , (formULField form, jsLength username)
+                        , (formPLField form, jsLength password)
                         , ("lt", formLT form)
                         , ("execution", formExecution form)
                         , ("_eventId", "submit")
@@ -92,7 +95,7 @@ authenticate session service@(Service _ allowed cas) username password = do
             response <- send $ RequestSpec action (Just fields) Nothing
             if isLanding response
                 then pure response
-                else case pageTitle response of
+                else case pageTitle (bodyText response) of
                     "智慧东大--统一身份认证" -> throwIO CredentialsRejectedOrInteractionRequired
                     -- Existing NEU email-binding detour: retry the service once,
                     -- without resubmitting credentials or looping indefinitely.
@@ -107,14 +110,76 @@ authenticate session service@(Service _ allowed cas) username password = do
     isLanding reply = any (`sameOrigin` replyURL reply) allowed
     checked :: Either Text a -> IO a
     checked = either (throwIO . CASProtocolError) pure
-    bodyText = TE.decodeUtf8With TE.lenientDecode . replyBody
-    pageTitle =
-        T.strip
-            . innerText
-            . takeWhile (/= TagClose "title")
-            . drop 1
-            . dropWhile (\t -> case t of TagOpen "title" _ -> False; _ -> True)
-            . parseTags
-            . bodyText
     -- Browser JavaScript string lengths are UTF-16 code units, not characters.
     jsLength = T.pack . show . T.foldl' (\n c -> n + if fromEnum c > 0xffff then 2 else 1) (0 :: Int)
+
+bodyText :: Reply -> Text
+bodyText = TE.decodeUtf8With TE.lenientDecode . replyBody
+
+pageTitle :: Text -> Text
+pageTitle html =
+    T.strip
+        . innerText
+        . takeWhile (/= TagClose "title")
+        . drop 1
+        . dropWhile (\t -> case t of TagOpen "title" _ -> False; _ -> True)
+        . parseTags
+        $ html
+
+pageContext :: Text -> Text
+pageContext html = case pageTitle html of
+    "" -> ""
+    title -> "（页面标题：" <> title <> "）"
+
+{- | Find an RSA public key without depending on a script filename. Inline
+scripts are checked first, then same-origin external scripts in priority order.
+Only GETs are issued; a missing or unusable candidate is skipped. A
+login-named script from another origin is rejected instead of followed.
+-}
+discoverPublicKey :: Session -> Origin -> Text -> Text -> [Text] -> IO (Either Text Text)
+discoverPublicKey session cas pageURL html scripts =
+    case keyIn html of
+        Just key -> pure $ Right key
+        Nothing -> walk [] ordered
+  where
+    keyIn body = case extractPublicKey body of
+        Left _ -> Nothing
+        Right encoded -> case decodePublicKey encoded of
+            Left _ -> Nothing
+            Right _ -> Just encoded
+    ordered = take 8 . nub . sortOn rank $ scripts
+    rank src
+        | contains "login_neu" src = 0 :: Int
+        | contains "login" src = 1
+        | contains "rsa" src = 2
+        | otherwise = 3
+    contains needle src = needle `T.isInfixOf` T.toLower src
+    walk attempts [] =
+        pure $
+            Left $
+                ( if null attempts
+                    then "SSO 页面缺少登录脚本或 RSA 公钥"
+                    else "SSO 页面未找到可用的 RSA 公钥（" <> T.intercalate "；" attempts <> "）"
+                )
+                    <> pageContext html
+    walk attempts (src : rest) = case resolveURL pageURL src of
+        Left err -> next err
+        Right url
+            | not (sameOrigin cas url) ->
+                if contains "login" src
+                    then pure $ Left "SSO 表单或脚本指向了不可信地址"
+                    else next "脚本地址不在 CAS 域"
+            | otherwise -> do
+                result <- try (request session [cas] $ RequestSpec url Nothing Nothing) :: IO (Either ServiceError Reply)
+                case result of
+                    Left (ServiceError message) -> next message
+                    Right reply -> case keyIn (bodyText reply) of
+                        Just key -> pure $ Right key
+                        Nothing -> next "未找到 publicKeyStr"
+      where
+        next reason = walk (attempts ++ [scriptName src <> "：" <> reason]) rest
+
+scriptName :: Text -> Text
+scriptName src =
+    let name = T.takeWhileEnd (/= '/') $ T.takeWhile (/= '?') src
+     in if T.null name then src else name

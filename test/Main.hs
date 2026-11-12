@@ -53,12 +53,30 @@ main = do
     formHTML <- T.readFile "test/fixtures/login.html"
     form <- right $ parseLoginForm formHTML
     assert "form values and HTML entity" $ formLT form == "LT-fixture" && formExecution form == "e1s1" && formAction form == "/tpass/login?service=fixture&renew=true"
+    assert "all login script candidates collected" $
+        formScripts form
+            == [ "/tpass/comm/js/jquery.min.js"
+               , "/tpass/comm/neu/js/rsa.js"
+               , "/tpass/comm/neu/js/login_neu_new.js?v=3"
+               ]
+    assert "submission fields discovered by id/name" $
+        formRSAField form == "rsa" && formULField form == "ul" && formPLField form == "pl"
+    let renamed =
+            "<html><form id='loginForm' action='/x'><input name='lt' value='L'/><input name='execution' value='E'/><input id='rsa' name='enc'/><input id='ul' name='ulen'/><input id='pl' name='plen'/></form></html>"
+    renamedForm <- right $ parseLoginForm renamed
+    assert "renamed submission fields are followed" $
+        formRSAField renamedForm == "enc" && formULField renamedForm == "ulen" && formPLField renamedForm == "plen"
+    assert "form without scripts parses for inline key discovery" $ isRight $ parseLoginForm renamed
     assert "missing form" $ isLeft $ parseLoginForm "<html>error</html>"
     assert "missing key" $ isLeft $ extractPublicKey "var other = 1;"
     assert "invalid RSA" $ isLeft $ decodePublicKey "AAAA"
     assert "URL query decoding" $ queryValue "ticket" "http://ipgw.neu.edu.cn/?ticket=ST%2B1" == Right "ST+1"
     assert "missing ticket" $ isLeft $ queryValue "ticket" "http://ipgw.neu.edu.cn/"
     assert "arrears" $ isLeft $ loginResult $ object ["code" .= (1 :: Int), "message" .= ("E2616: Arrearage users." :: T.Text)]
+    assert "already online is idempotent success" $
+        loginResult (object ["code" .= (1 :: Int), "message" .= ("ip_already_online_error" :: T.Text)]) == Right ()
+    assert "unknown gateway error preserves server message" $
+        loginResult (object ["code" .= (1 :: Int), "message" .= ("E9999: fixture" :: T.Text)]) == Left "网关拒绝登录：E9999: fixture"
     public <- T.strip <$> T.readFile "test/fixtures/public-key.b64"
     let script = "var publicKeyStr = \"" <> public <> "\";"
     assert "extract public key" $ extractPublicKey script == Right public
@@ -155,7 +173,7 @@ protocolTests :: T.Text -> T.Text -> IO ()
 protocolTests html script = do
     let root = Reply "http://ipgw.neu.edu.cn/srun_portal_pc?ac_id=7" ""
         page = Reply "https://pass.neu.edu.cn/tpass/login?service=x" (TE.encodeUtf8 html)
-        js = Reply "https://pass.neu.edu.cn/tpass/static/login_neu.js" (TE.encodeUtf8 script)
+        js = Reply "https://pass.neu.edu.cn/tpass/comm/neu/js/login_neu_new.js?v=3" (TE.encodeUtf8 script)
         ticket = Reply "http://ipgw.neu.edu.cn/srun_portal_sso?ac_id=7&ticket=ST%2Btest" (TE.encodeUtf8 "<title>IP控制网关</title>")
         success = Reply "http://ipgw.neu.edu.cn/v1/srun_portal_sso" "{\"code\":0,\"message\":\"success\"}"
     (client, finish) <- mock [root, page, js, ticket, success]

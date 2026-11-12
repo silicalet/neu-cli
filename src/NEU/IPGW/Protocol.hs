@@ -57,8 +57,11 @@ parseStatus value = case fieldText "error" value of
 loginResult :: Value -> Either Text ()
 loginResult value
     | numeric "code" value == Just 0 && fieldText "message" value == Just "success" = Right ()
+    | fieldText "message" value == Just "ip_already_online_error" = Right ()
     | fieldText "message" value == Just "E2616: Arrearage users." = Left "账号已欠费"
     | fieldText "message" value == Just "no_response_data_error" = Left "网关未返回账号数据；缴费后请重新连接校园网"
+    | fieldText "message" value == Just "cas username is empty" = Left "SSO 票据无效或已过期；请重试登录"
+    | Just message <- fieldText "message" value = Left ("网关拒绝登录：" <> message)
     | otherwise = Left "网关拒绝登录，返回了未识别的结果"
 
 logoutResult :: Bool -> Value -> Either Text ()

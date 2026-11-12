@@ -139,7 +139,7 @@ workflowTests payment = do
     login <- T.readFile "test/fixtures/login.html"
     key <- T.strip <$> T.readFile "test/fixtures/public-key.b64"
     let landing = reply "/home" home
-        authReplies = [Reply "https://pass.neu.edu.cn/tpass/login" (TE.encodeUtf8 login), Reply "https://pass.neu.edu.cn/tpass/login_neu.js" (TE.encodeUtf8 $ "var publicKeyStr = \"" <> key <> "\";"), landing, landing]
+        authReplies = [Reply "https://pass.neu.edu.cn/tpass/login" (TE.encodeUtf8 login), Reply "https://pass.neu.edu.cn/tpass/comm/neu/js/login_neu_new.js?v=3" (TE.encodeUtf8 $ "var publicKeyStr = \"" <> key <> "\";"), landing, landing]
     (service, finish) <- mock $ authReplies ++ [landing, reply "/statistic/index" daily, reply "/statistic/flow" monthly, reply "/log/pay" payment]
     authenticateSelfService service "fixture-user" "fixture-secret"
     overview <- fetchOverview service
